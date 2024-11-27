@@ -28,6 +28,7 @@ auto param_contrast = iotwebconf::Builder<iotwebconf::IntTParameter<int>>("c").l
 auto param_saturation = iotwebconf::Builder<iotwebconf::IntTParameter<int>>("s").label("Saturation").defaultValue(DEFAULT_SATURATION).min(-2).max(2).build();
 auto param_special_effect = iotwebconf::Builder<iotwebconf::SelectTParameter<sizeof(camera_effects[0])>>("e").label("Effect").optionValues((const char *)&camera_effects).optionNames((const char *)&camera_effects).optionCount(sizeof(camera_effects) / sizeof(camera_effects[0])).nameLength(sizeof(camera_effects[0])).defaultValue(DEFAULT_EFFECT).build();
 auto param_whitebal = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("wb").label("White balance").defaultValue(DEFAULT_WHITE_BALANCE).build();
+auto param_flash_light_bal = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("fl").label("Flash light").defaultValue(DEFAULT_FLASH_LIGHT).build();
 auto param_awb_gain = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("awbg").label("Automatic white balance gain").defaultValue(DEFAULT_WHITE_BALANCE_GAIN).build();
 auto param_wb_mode = iotwebconf::Builder<iotwebconf::SelectTParameter<sizeof(camera_wb_modes[0])>>("wbm").label("White balance mode").optionValues((const char *)&camera_wb_modes).optionNames((const char *)&camera_wb_modes).optionCount(sizeof(camera_wb_modes) / sizeof(camera_wb_modes[0])).nameLength(sizeof(camera_wb_modes[0])).defaultValue(DEFAULT_WHITE_BALANCE_MODE).build();
 auto param_exposure_ctrl = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("ec").label("Exposure control").defaultValue(DEFAULT_EXPOSURE_CONTROL).build();
@@ -124,6 +125,7 @@ void handle_root()
       {"Contrast", String(param_contrast.value())},
       {"Saturation", String(param_saturation.value())},
       {"SpecialEffect", String(param_special_effect.value())},
+      {"FlashLight", String(param_flash_light_bal.value())},
       {"WhiteBal", String(param_whitebal.value())},
       {"AwbGain", String(param_awb_gain.value())},
       {"WbMode", String(param_wb_mode.value())},
@@ -158,7 +160,8 @@ void handle_snapshot()
     web_server.send(404, "text/plain", "Camera is not initialized");
     return;
   }
-
+  if(bool(param_flash_light_bal.value()))
+    digitalWrite(FLASH_LIGHT_PIN, HIGH);
   // Remove old images stored in the frame buffer
   auto frame_buffers = CAMERA_CONFIG_FB_COUNT;
   while (frame_buffers--)
@@ -166,6 +169,8 @@ void handle_snapshot()
 
   auto fb_len = cam.getSize();
   auto fb = (const char *)cam.getfb();
+  if(bool(param_flash_light_bal.value()))
+    digitalWrite(FLASH_LIGHT_PIN, LOW);
   if (fb == nullptr)
   {
     web_server.send(404, "text/plain", "Unable to obtain frame buffer from the camera");
@@ -264,6 +269,7 @@ void update_camera_settings()
 
   camera->set_brightness(camera, param_brightness.value());
   camera->set_contrast(camera, param_contrast.value());
+  camera->set_framesize(camera, lookup_frame_size(param_frame_size.value()));
   camera->set_saturation(camera, param_saturation.value());
   camera->set_special_effect(camera, lookup_camera_effect(param_special_effect.value()));
   camera->set_whitebal(camera, param_whitebal.value());
@@ -321,6 +327,7 @@ void setup()
   digitalWrite(USER_LED_GPIO, !USER_LED_ON_LEVEL);
 #endif
 
+  pinMode(FLASH_LIGHT_PIN, OUTPUT);
   Serial.begin(115200);
   Serial.setDebugOutput(true);
 
@@ -346,6 +353,7 @@ void setup()
   param_group_camera.addItem(&param_contrast);
   param_group_camera.addItem(&param_saturation);
   param_group_camera.addItem(&param_special_effect);
+  param_group_camera.addItem(&param_flash_light_bal);
   param_group_camera.addItem(&param_whitebal);
   param_group_camera.addItem(&param_awb_gain);
   param_group_camera.addItem(&param_wb_mode);
