@@ -15,6 +15,9 @@
 #include <format_number.h>
 #include <moustache.h>
 #include <settings.h>
+#include <SD_MMC.h>
+#include <NTPClient.h>
+#include <TFT_eSPI.h>
 
 // HTML files
 extern const char index_html_min_start[] asm("_binary_html_index_min_html_start");
@@ -61,6 +64,15 @@ IotWebConf iotWebConf(thingName.c_str(), &dnsServer, &web_server, WIFI_PASSWORD,
 
 // Camera initialization result
 esp_err_t camera_init_result;
+
+TFT_eSPI tft = TFT_eSPI();
+
+// NTP 配置
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
+// 函数定义
+String getDateTime();
+void SavePhoto(uint8_t * img_buf, size_t iLen);
 
 void handle_root()
 {
@@ -161,7 +173,10 @@ void handle_snapshot()
     return;
   }
   if(bool(param_flash_light_bal.value()))
+  {
+    SD_MMC.end();
     digitalWrite(FLASH_LIGHT_PIN, HIGH);
+  }
   // Remove old images stored in the frame buffer
   auto frame_buffers = CAMERA_CONFIG_FB_COUNT;
   while (frame_buffers--)
@@ -176,7 +191,7 @@ void handle_snapshot()
     web_server.send(404, "text/plain", "Unable to obtain frame buffer from the camera");
     return;
   }
-
+  SavePhoto((uint8_t *)fb, fb_len);
   web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   web_server.setContentLength(fb_len);
   web_server.send(200, "image/jpeg", "");
@@ -214,6 +229,22 @@ void handle_stream()
   log_v("stopped streaming");
 }
 
+void initaialize_tft()
+{
+  tft.begin();
+  tft.setRotation(1); // 设置屏幕方向（0-3）
+  tft.fillScreen(TFT_BLACK); // 清屏
+
+  // 显示文本
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(10, 10);
+  tft.println("Hello, ESP32-CAM!");
+
+  // 显示矩形
+  tft.fillRect(50, 50, 60, 60, TFT_RED);
+}
+
 esp_err_t initialize_camera()
 {
   log_v("initialize_camera");
@@ -243,7 +274,7 @@ esp_err_t initialize_camera()
     .xclk_freq_hz = CAMERA_CONFIG_CLK_FREQ_HZ,  // Frequency of XCLK signal, in Hz. EXPERIMENTAL: Set to 16MHz on ESP32-S2 or ESP32-S3 to enable EDMA mode
     .ledc_timer = CAMERA_CONFIG_LEDC_TIMER,     // LEDC timer to be used for generating XCLK
     .ledc_channel = CAMERA_CONFIG_LEDC_CHANNEL, // LEDC channel to be used for generating XCLK
-    .pixel_format = PIXFORMAT_JPEG,             // Format of the pixel data: PIXFORMAT_ + YUV422|GRAYSCALE|RGB565|JPEG
+    .pixel_format = PIXFORMAT_RGB565,             // Format of the pixel data: PIXFORMAT_ + YUV422|GRAYSCALE|RGB565|JPEG
     .frame_size = frame_size,                   // Size of the output image: FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
     .jpeg_quality = jpeg_quality,               // Quality of JPEG output. 0-63 lower means higher quality
     .fb_count = CAMERA_CONFIG_FB_COUNT,         // Number of frame buffers to be allocated. If more than one, then each frame will be acquired (double speed)
@@ -317,6 +348,50 @@ void on_config_saved()
   update_camera_settings();
 }
 
+// 获取当前日期和时间
+String getDateTime()
+{
+  timeClient.update();
+  time_t rawtime = timeClient.getEpochTime();
+  struct tm * ti;
+  ti = localtime(&rawtime);
+
+  char buffer[20];
+  sprintf(buffer, "%04d%02d%02d_%02d%02d%02d",
+          ti->tm_year + 1900, ti->tm_mon + 1, ti->tm_mday,
+          ti->tm_hour, ti->tm_min, ti->tm_sec);
+  return String(buffer);
+}
+
+// 拍照并保存到 SD 卡
+void SavePhoto(uint8_t * img_buf, size_t iLen) 
+{
+  // 检查 SD 卡是否已挂载
+  if (!SD_MMC.begin()) {
+    Serial.println("SD Card Mount Failed, trying again...");
+    return;
+  }
+  // 获取当前日期和时间
+  String dateTime = getDateTime();
+  String folderName = "/" + dateTime.substring(0, 8); // 提取日期作为文件夹名
+  String fileName = folderName + "/" + dateTime.substring(9, dateTime.length()) + ".jpg";
+
+  // 创建文件夹
+  if (!SD_MMC.exists(folderName.c_str())) {
+    SD_MMC.mkdir(folderName.c_str());
+  }
+
+  // 保存图片到 SD 卡
+  File file = SD_MMC.open(fileName.c_str(), FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+  file.write(img_buf, iLen);
+  file.close();
+  Serial.println("Photo saved: " + fileName);
+}
+
 void setup()
 {
   // Disable brownout
@@ -328,6 +403,7 @@ void setup()
 #endif
 
   pinMode(FLASH_LIGHT_PIN, OUTPUT);
+  digitalWrite(FLASH_LIGHT_PIN, LOW);
   Serial.begin(115200);
   Serial.setDebugOutput(true);
 
@@ -396,6 +472,14 @@ void setup()
     log_e("Failed to initialize camera. Error: 0x%0x. Frame size: %s, frame rate: %d ms, jpeg quality: %d", camera_init_result, param_frame_size.value(), param_frame_duration.value(), param_jpg_quality.value());
     delay(500);
   }
+  initaialize_tft();
+
+  // // 初始化 SD 卡
+  // if (!SD_MMC.begin()) {
+  //   Serial.println("SD Card Mount Failed");
+  // }
+  // else
+  //   Serial.println("SD Card Mounted");
 
   // Set up required URL handlers on the web server
   web_server.on("/", HTTP_GET, handle_root);
@@ -416,4 +500,17 @@ void loop()
 
   if (camera_server)
     camera_server->doLoop();
+
+  cam.run();
+  tft.pushImage(0, 0, cam.getWidth(), cam.getHeight(), (uint16_t *)cam.getfb());
+  
+  // 显示文本
+  // tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(1);
+  tft.setCursor(10, 10);
+  // tft.println("hello @");
+  tft.println(cam.getWidth());
+  tft.setCursor(10, 20);
+  tft.println(cam.getHeight());
+
 }
