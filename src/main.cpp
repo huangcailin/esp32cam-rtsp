@@ -18,6 +18,7 @@
 #include <SD_MMC.h>
 #include <NTPClient.h>
 #include <TFT_eSPI.h>
+#include "camera.h"
 
 // HTML files
 extern const char index_html_min_start[] asm("_binary_html_index_min_html_start");
@@ -51,7 +52,7 @@ auto param_dcw = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("dcw").labe
 auto param_colorbar = iotwebconf::Builder<iotwebconf::CheckboxTParameter>("cb").label("Colorbar").defaultValue(DEFAULT_COLORBAR).build();
 
 // Camera
-OV2640 cam;
+CAM2640 cam;
 // DNS Server
 DNSServer dnsServer;
 // RTSP Server
@@ -64,7 +65,8 @@ IotWebConf iotWebConf(thingName.c_str(), &dnsServer, &web_server, WIFI_PASSWORD,
 
 // Camera initialization result
 esp_err_t camera_init_result;
-
+// 共享队列（用于双核通信）
+QueueHandle_t imageQueue = xQueueCreate(1, sizeof(void*));
 TFT_eSPI tft = TFT_eSPI();
 
 // NTP 配置
@@ -73,6 +75,7 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org");
 // 函数定义
 String getDateTime();
 void SavePhoto(uint8_t * img_buf, size_t iLen);
+bool GetJpeg(size_t& jpeg_size, uint8_t ** jpeg_buf);
 
 void handle_root()
 {
@@ -182,20 +185,27 @@ void handle_snapshot()
   while (frame_buffers--)
     cam.run();
 
-  auto fb_len = cam.getSize();
-  auto fb = (const char *)cam.getfb();
+  size_t fb_len = 0;
+  uint8_t *pJpeg_buf = nullptr;
+  bool bRet = GetJpeg(fb_len, &pJpeg_buf);
   if(bool(param_flash_light_bal.value()))
     digitalWrite(FLASH_LIGHT_PIN, LOW);
-  if (fb == nullptr)
+  if (!bRet)
   {
-    web_server.send(404, "text/plain", "Unable to obtain frame buffer from the camera");
+    String strContent = "Unable to obtain frame buffer from the camera:";
+    strContent +=((bRet==true)?"true":"false");
+    web_server.send(404, "text/plain", strContent);
     return;
   }
-  SavePhoto((uint8_t *)fb, fb_len);
+  
+  // SavePhoto(pJpeg_buf, fb_len);
   web_server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   web_server.setContentLength(fb_len);
   web_server.send(200, "image/jpeg", "");
-  web_server.sendContent(fb, fb_len);
+  web_server.sendContent((const char*)pJpeg_buf, fb_len);
+  delete pJpeg_buf;
+  delay(500);
+  esp_restart();
 }
 
 #define STREAM_CONTENT_BOUNDARY "123456789000000000000987654321"
@@ -285,7 +295,7 @@ esp_err_t initialize_camera()
 #endif
     .sccb_i2c_port = SCCB_I2C_PORT // If pin_sccb_sda is -1, use the already configured I2C bus by number
   };
-
+  esp_camera_deinit();
   return cam.init(camera_config);
 }
 
@@ -367,7 +377,7 @@ String getDateTime()
 void SavePhoto(uint8_t * img_buf, size_t iLen) 
 {
   // 检查 SD 卡是否已挂载
-  if (!SD_MMC.begin()) {
+  if (!SD_MMC.begin("/sdcard", true)) {
     Serial.println("SD Card Mount Failed, trying again...");
     return;
   }
@@ -392,33 +402,51 @@ void SavePhoto(uint8_t * img_buf, size_t iLen)
   Serial.println("Photo saved: " + fileName);
 }
 
-void setup()
+bool GetJpeg(size_t& jpeg_size, uint8_t** jpeg_buf)
 {
-  // Disable brownout
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  camera_fb_t* m_fb = cam.getfbObj();
+  if(m_fb)
+    esp_camera_fb_return(m_fb);
+  // 将RGB565数据转换为JPEG
+  bool jpeg_converted = frame2jpg(m_fb, 80, jpeg_buf, &jpeg_size); // 80是JPEG质量（0-100）
+  if (!jpeg_converted) {
+    Serial.println("JPEG Conversion Failed");
+    esp_camera_fb_return(m_fb);
+    return false;
+  }
+  esp_camera_fb_return(m_fb);
+  return true;
+}
 
-#ifdef USER_LED_GPIO
-  pinMode(USER_LED_GPIO, OUTPUT);
-  digitalWrite(USER_LED_GPIO, !USER_LED_ON_LEVEL);
-#endif
+void taskCamera(void *pvParameters) 
+{
+  // Try to initialize 3 times
+  for (auto i = 0; i < 3; i++)
+  {
+    camera_init_result = initialize_camera();
+    if (camera_init_result == ESP_OK)
+    {
+      update_camera_settings();
+      break;
+    }
 
-  pinMode(FLASH_LIGHT_PIN, OUTPUT);
-  digitalWrite(FLASH_LIGHT_PIN, LOW);
-  Serial.begin(115200);
-  Serial.setDebugOutput(true);
+    esp_camera_deinit();
+    log_e("Failed to initialize camera. Error: 0x%0x. Frame size: %s, frame rate: %d ms, jpeg quality: %d", camera_init_result, param_frame_size.value(), param_frame_duration.value(), param_jpg_quality.value());
+    delay(500);
+  }
 
-#ifdef ARDUINO_USB_CDC_ON_BOOT
-  // Delay for USB to connect/settle
-  delay(5000);
-#endif
+  while (1) {
+    if (camera_server)
+      camera_server->doLoop();
+    cam.run();
+    void *p=nullptr;
+    xQueueSend(imageQueue, &p, portMAX_DELAY); // 发送到队列
+    vTaskDelay(10 / portTICK_PERIOD_MS); // 控制采集频率‌:ml-citation{ref="5" data="citationList"}
+  }
+}
 
-  log_i("Core debug level: %d", CORE_DEBUG_LEVEL);
-  log_i("CPU Freq: %d Mhz, %d core(s)", getCpuFrequencyMhz(), ESP.getChipCores());
-  log_i("Free heap: %d bytes", ESP.getFreeHeap());
-  log_i("SDK version: %s", ESP.getSdkVersion());
-  log_i("Board: %s", BOARD_NAME);
-  log_i("Starting " APP_TITLE "...");
-
+void taskMain(void *pvParameters)
+ {
   if (CAMERA_CONFIG_FB_LOCATION == CAMERA_FB_IN_PSRAM && !psramInit())
     log_e("Failed to initialize PSRAM");
 
@@ -458,24 +486,11 @@ void setup()
 #endif
   iotWebConf.init();
 
-  // Try to initialize 3 times
-  for (auto i = 0; i < 3; i++)
-  {
-    camera_init_result = initialize_camera();
-    if (camera_init_result == ESP_OK)
-    {
-      update_camera_settings();
-      break;
-    }
-
-    esp_camera_deinit();
-    log_e("Failed to initialize camera. Error: 0x%0x. Frame size: %s, frame rate: %d ms, jpeg quality: %d", camera_init_result, param_frame_size.value(), param_frame_duration.value(), param_jpg_quality.value());
-    delay(500);
-  }
+  
   initaialize_tft();
 
   // // 初始化 SD 卡
-  // if (!SD_MMC.begin()) {
+  // if (!SD_MMC.begin("/sdcard", true)) {
   //   Serial.println("SD Card Mount Failed");
   // }
   // else
@@ -483,34 +498,88 @@ void setup()
 
   // Set up required URL handlers on the web server
   web_server.on("/", HTTP_GET, handle_root);
-  web_server.on("/config", []
-                { iotWebConf.handleConfig(); });
+  web_server.on("/config", []{ iotWebConf.handleConfig(); });
   // Camera snapshot
   web_server.on("/snapshot", HTTP_GET, handle_snapshot);
   // Camera stream
   web_server.on("/stream", HTTP_GET, handle_stream);
 
-  web_server.onNotFound([]()
-                        { iotWebConf.handleNotFound(); });
+  web_server.onNotFound([](){ iotWebConf.handleNotFound(); });
+
+  while (1)
+  {
+    char *pTmp;
+    if (xQueueReceive(imageQueue, &pTmp, portMAX_DELAY)) 
+    {
+      tft.pushImage(0, 0, cam.getWidth(), cam.getHeight(), (uint16_t *)cam.getfb());
+      
+      // 显示文本
+      // tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.setTextSize(1);
+      tft.setCursor(10, 10);
+      // tft.println("hello @");
+      tft.println(cam.getWidth());
+      tft.setCursor(10, 20);
+      tft.println(cam.getHeight());
+      
+    }
+    iotWebConf.doLoop();
+    vTaskDelay(1); // 防止任务阻塞‌:ml-citation{ref="2,7" data="citationList"}
+  }
+}
+
+
+void setup()
+{
+  // Disable brownout
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+#ifdef USER_LED_GPIO
+  pinMode(USER_LED_GPIO, OUTPUT);
+  digitalWrite(USER_LED_GPIO, !USER_LED_ON_LEVEL);
+#endif
+
+  pinMode(FLASH_LIGHT_PIN, OUTPUT);
+  digitalWrite(FLASH_LIGHT_PIN, LOW);
+  Serial.begin(115200);
+  Serial.setDebugOutput(true);
+
+#ifdef ARDUINO_USB_CDC_ON_BOOT
+  // Delay for USB to connect/settle
+  delay(5000);
+#endif
+
+  log_i("Core debug level: %d", CORE_DEBUG_LEVEL);
+  log_i("CPU Freq: %d Mhz, %d core(s)", getCpuFrequencyMhz(), ESP.getChipCores());
+  log_i("Free heap: %d bytes", ESP.getFreeHeap());
+  log_i("SDK version: %s", ESP.getSdkVersion());
+  log_i("Board: %s", BOARD_NAME);
+  log_i("Starting " APP_TITLE "...");
+
+  // Core 0绑定摄像头任务
+  xTaskCreatePinnedToCore(
+    taskCamera, 
+    "Camera", 
+    8192,  // 堆栈大小（需较大内存）
+    NULL, 
+    2,     // 高优先级
+    NULL, 
+    0      // Core 0
+  );
+
+  // Core 1绑定显示任务
+  xTaskCreatePinnedToCore(
+    taskMain, 
+    "Display", 
+    4096, 
+    NULL, 
+    1,     // 较低优先级
+    NULL, 
+    1      // Core 1
+  );
+  
 }
 
 void loop()
 {
-  iotWebConf.doLoop();
-
-  if (camera_server)
-    camera_server->doLoop();
-
-  cam.run();
-  tft.pushImage(0, 0, cam.getWidth(), cam.getHeight(), (uint16_t *)cam.getfb());
-  
-  // 显示文本
-  // tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextSize(1);
-  tft.setCursor(10, 10);
-  // tft.println("hello @");
-  tft.println(cam.getWidth());
-  tft.setCursor(10, 20);
-  tft.println(cam.getHeight());
-
 }
