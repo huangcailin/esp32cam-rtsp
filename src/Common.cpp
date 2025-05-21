@@ -1,3 +1,4 @@
+#include <esp_task_wdt.h>
 #include "Common.h"
 
 EEPROM_Manager ::EEPROM_Manager(/* args */)
@@ -212,7 +213,7 @@ bool CamManager::GetJpeg(size_t &jpeg_size, uint8_t **jpeg_buf)
 void CamManager::initJpgDec()
 {
     ESP_LOGI(TAG, "initJpgDec");
-    TJpgDec.setJpgScale(1);
+    TJpgDec.setJpgScale(2);
     TJpgDec.setSwapBytes(true);
     TJpgDec.setCallback(&CamManager::StaticJpegRender);
     ESP_LOGI(TAG, "initJpgDec succ");
@@ -246,11 +247,12 @@ void CamManager::initaialize_tft()
 void CamManager::init_double_buffer()
 {
     ESP_LOGI(TAG, "Init buffer");
-    m_oDataBuff.producerBuffer = (uint8_t *)heap_caps_malloc(IMAGE_BUF_SIZE, MALLOC_CAP_SPIRAM);
-    m_oDataBuff.pProducerBuf = m_oDataBuff.producerBuffer;
+    m_oDataBuff.bDecoding = false;
+    m_oDataBuff.roducerBuffer = (uint8_t *)heap_caps_malloc(IMAGE_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    m_oDataBuff.pProducerBuf = m_oDataBuff.roducerBuffer;
     m_oDataBuff.consumerBuffer = (uint8_t *)heap_caps_malloc(IMAGE_BUF_SIZE, MALLOC_CAP_SPIRAM);
     m_oDataBuff.pConsumerBuf = m_oDataBuff.consumerBuffer;
-    m_frameQueue = xQueueCreate(1, sizeof(uint8_t*));
+    m_frameQueue = xQueueCreate(1, sizeof(uint8_t *));
     m_oDataBuff.switch_mutex = xSemaphoreCreateMutex();
     ESP_LOGI(TAG, "Init buffer end");
 }
@@ -266,7 +268,12 @@ void CamManager::TakePhoto()
 
 esp_err_t CamManager::init_camera()
 {
-    // init_double_buffer();
+    //确保cam断开
+    esp_camera_deinit(); //摄像头去初始化   防止没断电导致cam初始化失败
+    pinMode(32,OUTPUT );   //  32是  cam电源控制引脚
+    digitalWrite(32, 1);   //  高电平  断电 cam的
+    delay(20);
+    pinMode(32,INPUT );  //释放  引脚
     // initialize the camera
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK)
@@ -364,78 +371,81 @@ void CamManager::OnButtonClick()
     }
 }
 
-void CamManager::CatchCamera(unsigned int nCurFrame)
+void CamManager::CatchCamera(unsigned int& nFrame, unsigned long& nLastSecond)
 {
     if (m_Status.oCurMode != CtrlMode_CAMERE)
     {
         vTaskDelay(5);
         return;
     }
-    camera_fb_t *pic = esp_camera_fb_get();
-    if (!pic)
+    if (m_oDataBuff.bDecoding)
     {
-        ESP_LOGI(TAG, "CatchCamera err ");
-        vTaskDelay(10 / portTICK_PERIOD_MS); // 获取失败时延时重试
-        return;
-    }
-    if (xSemaphoreTake(m_oDataBuff.switch_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
-    {
-        // ESP_LOGI(TAG, "CatchCamera:%d", pic->len);
-        // TJpgDec.setJpgScale(1.0f * TFT_WIDTH / pic->width); // 计算缩放比例
-        // JRESULT jresult = TJpgDec.drawJpg(0, 0, (const uint8_t *)pic->buf, (uint32_t)pic->len);
-        if (pic->len <= IMAGE_BUF_SIZE)
+        camera_fb_t *pic = esp_camera_fb_get();
+        if (!pic)
         {
-            memcpy((void *)m_oDataBuff.pProducerBuf, pic->buf, pic->len);
-            // 交换缓冲区指针
-            uint8_t *temp = m_oDataBuff.pProducerBuf;
-            m_oDataBuff.pProducerBuf = m_oDataBuff.pConsumerBuf;
-            m_oDataBuff.pConsumerBuf = temp;
+            ESP_LOGI(TAG, "CatchCamera err ");
+            vTaskDelay(10 / portTICK_PERIOD_MS); // 获取失败时延时重试
+            return;
         }
-        // ESP_LOGI(TAG, "Picture taken! Its size was: %zu bytes", pic->len);
+        // TJpgDec.setJpgScale(1.0f * TFT_WIDTH / pic->width); // 计算缩放比例
+        JRESULT jresult = TJpgDec.drawJpg(0, 0, (const uint8_t *)pic->buf, (uint32_t)pic->len);
         m_oDataBuff.nPic_W = pic->width;
         m_oDataBuff.nPic_H = pic->height;
         m_oDataBuff.nPic_Len = pic->len;
-        // int nPic_Len = pic->len;
-        m_oDataBuff.nFrame = nCurFrame;
-        // vTaskDelay(10 / portTICK_PERIOD_MS); 
-        xSemaphoreGive(m_oDataBuff.switch_mutex);
-        // 发送通知到队列
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        xQueueSendFromISR(m_frameQueue, &m_oDataBuff.pConsumerBuf, &xHigherPriorityTaskWoken);
-        if(xHigherPriorityTaskWoken == pdTRUE) {
-            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        // vTaskDelay(10 / portTICK_PERIOD_MS);
+        esp_camera_fb_return(pic);
+        m_oDataBuff.bDecoding = false;
+        
+        if (millis() - nLastSecond >= 1000)
+        {
+        nLastSecond = millis();
+        m_oDataBuff.nFrame = nFrame;
+        nFrame = 0;
         }
+        nFrame++;
     }
-    esp_camera_fb_return(pic);
+
+    // yield();
 }
 
 void CamManager::MainLoop()
 {
     OnButtonClick();
-    // ESP_LOGI(TAG, "taskMain CurMod:%d", m_Status.oCurMode);
     if (m_Status.oCurMode == CtrlMode_CAMERE)
     {
-        uint8_t *frameToDisplay = NULL;
-        if(xQueueReceive(m_frameQueue, &frameToDisplay, pdMS_TO_TICKS(3)))
+        m_oDataBuff.bDecoding = true;
+        // m_tft.startWrite();
+        // ESP_LOGI(TAG, "MainLoop %d:%d", m_oDataBuff.bDecoding , &m_oDataBuff.bDrawing);
+        while (m_oDataBuff.bDecoding || m_oDataBuff.bDrawing)
         {
-            // uint32_t start = millis();
-            ShowScaledJPG(m_oDataBuff);
-            // m_tft.pushImage(0, 0, m_oDataBuff.nPic_W, m_oDataBuff.nPic_H, (uint16_t *)m_oDataBuff.pConsumerBuf);
-            // ESP_LOGI(TAG, "MainLoop:%d", millis()-start);
-            if (m_Status.oCurMode != m_Status.oPreMode)
+            if (m_oDataBuff.bDrawing)
             {
-                m_Status.oPreMode = m_Status.oCurMode;
-                m_tft.setTextColor(TFT_WHITE, TFT_BLACK, true);
-                m_tft.setTextSize(1);
+                uint32_t start = millis();
+                m_tft.pushImage((int32_t)m_oDataBuff.oPosistion.nX, (int32_t)m_oDataBuff.oPosistion.nY + 8, (int32_t)m_oDataBuff.oPosistion.nW,
+                                   (int32_t)m_oDataBuff.oPosistion.nH, (uint16_t const *)m_oDataBuff.pConsumerBuf);
+                
+                m_oDataBuff.bDrawing = false;
             }
-
-            m_tft.setCursor(10, 10);
-            m_tft.println(m_oDataBuff.nPic_W);
-            m_tft.setCursor(10, 20);
-            m_tft.println(m_oDataBuff.nPic_H);
-            m_tft.setCursor(10, 30);
-            m_tft.println(m_oDataBuff.nFrame);
+            yield();
         }
+        // uint32_t start = millis();
+        // ShowScaledJPG(m_oDataBuff);
+        // m_tft.pushImage(0, 0, m_oDataBuff.nPic_W, m_oDataBuff.nPic_H, (uint16_t *)m_oDataBuff.pConsumerBuf);
+        // ESP_LOGI(TAG, "MainLoop:%d", millis()-start);
+        if (m_Status.oCurMode != m_Status.oPreMode)
+        {
+            m_Status.oPreMode = m_Status.oCurMode;
+            m_tft.setTextColor(TFT_WHITE, TFT_BLACK, true);
+            m_tft.setTextSize(1);
+        }
+
+        m_tft.setCursor(10, 10);
+        m_tft.println(m_oDataBuff.nPic_W);
+        m_tft.setCursor(10, 20);
+        m_tft.println(m_oDataBuff.nPic_H);
+        m_tft.setCursor(10, 30);
+        m_tft.println(m_oDataBuff.nFrame);
+        // m_tft.endWrite();
     }
     else if (m_Status.oCurMode == CtrlMode_MENU)
     {
@@ -468,9 +478,22 @@ void CamManager::ShowMsg(string strMsg)
 
 bool CamManager::jpegRender(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
 {
-    // m_tft.startWrite();
-    m_tft.pushImage(x, y, w, h, bitmap);
-    // m_tft.endWrite();
+    // ESP_LOGI(TAG, "jpegRender:%d,%d,%d,%d  %d", x, y, w, h, &m_oDataBuff.bDrawing);
+    if (y >= m_tft.height())
+        return 0; // 停止进一步解码，因为图像已超出屏幕底部
+
+    while (m_oDataBuff.bDrawing)
+    {
+        esp_task_wdt_reset(); 
+        yield(); // 如果最后一个MCU块到TFT的渲染仍在进行中，请在此等待
+    }
+    // ESP_LOGI(TAG, "[%d]jpegRender now false", millis());
+    memcpy(m_oDataBuff.consumerBuffer, bitmap, 16 * 16 * 2); // 复制当次解码的 MCU块图像
+    m_oDataBuff.oPosistion.nX = x;
+    m_oDataBuff.oPosistion.nY = y;
+    m_oDataBuff.oPosistion.nW = w;
+    m_oDataBuff.oPosistion.nH = h;
+    m_oDataBuff.bDrawing = true; // 告知处理器1可以开始渲染MCU   解码好了未显示
     return true;
 }
 

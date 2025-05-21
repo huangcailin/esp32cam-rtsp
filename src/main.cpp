@@ -3,6 +3,7 @@
 #include <nvs_flash.h>
 #include <sys/param.h>
 #include <string.h>
+#include <esp_task_wdt.h>
 #include "Common.h"
 
 CamManager g_CamManager;
@@ -22,14 +23,7 @@ void Cam_main(void *Param)
   
   while (1)
   {
-    pCamManager->CatchCamera(nCurFrame);
-    if (millis() - lastSecond >= 1000)
-    {
-      lastSecond = millis();
-      nCurFrame = nFrame;
-      nFrame = 0;
-    }
-    nFrame++;
+    pCamManager->CatchCamera(nFrame, lastSecond);
     vTaskDelay(1);
   }
 #else
@@ -58,6 +52,9 @@ void setup()
   
   digitalWrite(FLASH_LIGHT_PIN, LOW);
 
+  enableCore0WDT();
+  enableCore1WDT();
+  esp_task_wdt_init(30, true);
   g_CamManager.init_double_buffer();
   g_CamManager.initaialize_tft();
   g_CamManager.initJpgDec();

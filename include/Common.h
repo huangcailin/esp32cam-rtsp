@@ -14,8 +14,9 @@
 
 static const char *TAG = "MY_CAM";
 // JPEG 数据结构
-struct JPEGData {
-    const uint8_t* data;
+struct JPEGData
+{
+    const uint8_t *data;
     size_t size;
     size_t position;
 };
@@ -30,17 +31,28 @@ struct Settings
     bool bUseFlashLight;
 };
 
+struct Posistion
+{
+    size_t nX;
+    size_t nY;
+    size_t nW;
+    size_t nH;
+};
+
 typedef struct
 {
-  uint8_t *producerBuffer;
-  uint8_t *consumerBuffer;
-  uint8_t *pProducerBuf;
-  uint8_t *pConsumerBuf;
-  size_t nPic_Len;
-  size_t nPic_H;
-  size_t nPic_W;
-  size_t nFrame;
-  SemaphoreHandle_t switch_mutex;
+    uint8_t *roducerBuffer;
+    uint8_t *consumerBuffer;
+    uint8_t *pProducerBuf;
+    uint8_t *pConsumerBuf;
+    size_t nPic_Len;
+    size_t nPic_H;
+    size_t nPic_W;
+    size_t nFrame;
+    SemaphoreHandle_t switch_mutex;
+    bool bDrawing;
+    bool bDecoding;
+    Posistion oPosistion;
 } double_buffer_t;
 
 enum CtrlMode
@@ -97,16 +109,16 @@ public:
     void TakePhoto();
     esp_err_t init_camera();
     void OnButtonClick();
-    void CatchCamera(unsigned int nCurFrame);
+    void CatchCamera(unsigned int& nFrame, unsigned long& nLastSecond);
     void MainLoop();
     void DrawMsg();
     void ShowMsg(string strMsg);
 
 private:
     void SavePhoto(uint8_t *img_buf, size_t iLen);
-    static bool StaticJpegRender(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap);
-    bool jpegRender(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap);
-    void ShowScaledJPG(double_buffer_t& oDataBuff);
+    static bool StaticJpegRender(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap);
+    bool jpegRender(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap);
+    void ShowScaledJPG(double_buffer_t &oDataBuff);
 
 private:
     TFT_eSPI m_tft = TFT_eSPI();
@@ -117,7 +129,7 @@ private:
     QueueHandle_t m_frameQueue;
 
 public:
-    static CamManager* m_instance; // 保存当前对象实例
+    static CamManager *m_instance; // 保存当前对象实例
     EEPROM_Manager m_EEPROM_Manager;
     StatusInfo m_Status;
 };
