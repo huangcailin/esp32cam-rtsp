@@ -248,12 +248,7 @@ void CamManager::init_double_buffer()
 {
     ESP_LOGI(TAG, "Init buffer");
     m_oDataBuff.bDecoding = false;
-    m_oDataBuff.roducerBuffer = (uint8_t *)heap_caps_malloc(IMAGE_BUF_SIZE, MALLOC_CAP_SPIRAM);
-    m_oDataBuff.pProducerBuf = m_oDataBuff.roducerBuffer;
-    m_oDataBuff.consumerBuffer = (uint8_t *)heap_caps_malloc(IMAGE_BUF_SIZE, MALLOC_CAP_SPIRAM);
-    m_oDataBuff.pConsumerBuf = m_oDataBuff.consumerBuffer;
-    m_frameQueue = xQueueCreate(1, sizeof(uint8_t *));
-    m_oDataBuff.switch_mutex = xSemaphoreCreateMutex();
+    m_oDataBuff.pConsumerBuf = (uint8_t *)heap_caps_malloc(IMAGE_BUF_SIZE, MALLOC_CAP_SPIRAM);
     ESP_LOGI(TAG, "Init buffer end");
 }
 
@@ -268,12 +263,12 @@ void CamManager::TakePhoto()
 
 esp_err_t CamManager::init_camera()
 {
-    //确保cam断开
-    esp_camera_deinit(); //摄像头去初始化   防止没断电导致cam初始化失败
-    pinMode(32,OUTPUT );   //  32是  cam电源控制引脚
-    digitalWrite(32, 1);   //  高电平  断电 cam的
+    // 确保cam断开
+    esp_camera_deinit(); // 摄像头去初始化   防止没断电导致cam初始化失败
+    pinMode(32, OUTPUT); //  32是  cam电源控制引脚
+    digitalWrite(32, 1); //  高电平  断电 cam的
     delay(20);
-    pinMode(32,INPUT );  //释放  引脚
+    pinMode(32, INPUT); // 释放  引脚
     // initialize the camera
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK)
@@ -371,7 +366,7 @@ void CamManager::OnButtonClick()
     }
 }
 
-void CamManager::CatchCamera(unsigned int& nFrame, unsigned long& nLastSecond)
+void CamManager::CatchCamera(unsigned int &nFrame, unsigned long &nLastSecond)
 {
     if (m_Status.oCurMode != CtrlMode_CAMERE)
     {
@@ -395,14 +390,19 @@ void CamManager::CatchCamera(unsigned int& nFrame, unsigned long& nLastSecond)
         // vTaskDelay(10 / portTICK_PERIOD_MS);
         esp_camera_fb_return(pic);
         m_oDataBuff.bDecoding = false;
-        
+
         if (millis() - nLastSecond >= 1000)
         {
-        nLastSecond = millis();
-        m_oDataBuff.nFrame = nFrame;
-        nFrame = 0;
+            nLastSecond = millis();
+            m_oDataBuff.nFrame = nFrame;
+            nFrame = 0;
         }
         nFrame++;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "CatchCamera wait....... ");
+        vTaskDelay(5 / portTICK_PERIOD_MS);
     }
 
     // yield();
@@ -415,15 +415,15 @@ void CamManager::MainLoop()
     {
         m_oDataBuff.bDecoding = true;
         // m_tft.startWrite();
-        // ESP_LOGI(TAG, "MainLoop %d:%d", m_oDataBuff.bDecoding , &m_oDataBuff.bDrawing);
+        // ESP_LOGI(TAG, "MainLoop %d:%d", m_oDataBuff.bDecoding , m_oDataBuff.bDrawing);
         while (m_oDataBuff.bDecoding || m_oDataBuff.bDrawing)
         {
             if (m_oDataBuff.bDrawing)
             {
-                uint32_t start = millis();
-                m_tft.pushImage((int32_t)m_oDataBuff.oPosistion.nX, (int32_t)m_oDataBuff.oPosistion.nY + 8, (int32_t)m_oDataBuff.oPosistion.nW,
-                                   (int32_t)m_oDataBuff.oPosistion.nH, (uint16_t const *)m_oDataBuff.pConsumerBuf);
-                
+                // uint32_t start = millis();
+                m_tft.pushImage(m_oDataBuff.oPosistion.nX, m_oDataBuff.oPosistion.nY, m_oDataBuff.oPosistion.nW,
+                                m_oDataBuff.oPosistion.nH, (uint16_t const *)m_oDataBuff.pConsumerBuf);
+
                 m_oDataBuff.bDrawing = false;
             }
             yield();
@@ -484,11 +484,11 @@ bool CamManager::jpegRender(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16
 
     while (m_oDataBuff.bDrawing)
     {
-        esp_task_wdt_reset(); 
+        esp_task_wdt_reset();
         yield(); // 如果最后一个MCU块到TFT的渲染仍在进行中，请在此等待
     }
     // ESP_LOGI(TAG, "[%d]jpegRender now false", millis());
-    memcpy(m_oDataBuff.consumerBuffer, bitmap, 16 * 16 * 2); // 复制当次解码的 MCU块图像
+    memcpy(m_oDataBuff.pConsumerBuf, bitmap, w * h * sizeof(uint16_t)); // 复制当次解码的 MCU块图像
     m_oDataBuff.oPosistion.nX = x;
     m_oDataBuff.oPosistion.nY = y;
     m_oDataBuff.oPosistion.nW = w;

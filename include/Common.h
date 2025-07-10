@@ -33,23 +33,19 @@ struct Settings
 
 struct Posistion
 {
-    size_t nX;
-    size_t nY;
-    size_t nW;
-    size_t nH;
+    int32_t nX;
+    int32_t nY;
+    int32_t nW;
+    int32_t nH;
 };
 
 typedef struct
 {
-    uint8_t *roducerBuffer;
-    uint8_t *consumerBuffer;
-    uint8_t *pProducerBuf;
     uint8_t *pConsumerBuf;
     size_t nPic_Len;
     size_t nPic_H;
     size_t nPic_W;
     size_t nFrame;
-    SemaphoreHandle_t switch_mutex;
     bool bDrawing;
     bool bDecoding;
     Posistion oPosistion;
@@ -126,7 +122,6 @@ private:
     double_buffer_t m_oDataBuff;
     string m_strMsg;
     unsigned long m_MsgKeepTime;
-    QueueHandle_t m_frameQueue;
 
 public:
     static CamManager *m_instance; // 保存当前对象实例
