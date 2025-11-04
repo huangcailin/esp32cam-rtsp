@@ -10,6 +10,13 @@
 #define TFT_DC 13 // Data Command control pin
 #define TFT_RST 2 // Reset pin (could connect to Arduino RESET pin)
 
+//E:\self\esp32cam-rtsp\.pio\libdeps\esp32cam\TFT_eSPI\User_Setup.h
+// #define TFT_MOSI 15 // In some display driver board, it might be written as "SDA" and so on.
+// #define TFT_SCLK 14
+// #define TFT_CS 12 // Chip select control pin
+// #define TFT_DC 13 // Data Command control pin
+// #define TFT_RST 2 // Reset pin (could connect to Arduino RESET pin)
+
 #define CAM_PIN_PWDN 32
 #define CAM_PIN_RESET -1 // software reset will be performed
 #define CAM_PIN_XCLK 0
@@ -55,12 +62,12 @@ static camera_config_t camera_config = {
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
 
-    .pixel_format = PIXFORMAT_JPEG, // YUV422,GRAYSCALE,RGB565,JPEG
-    .frame_size = FRAMESIZE_VGA,     // QQVGA-UXGA, For ESP32, do not use sizes above QVGA when not JPEG. The performance of the ESP32-S series has improved a lot, but JPEG mode always gives better frame rates.
+    .pixel_format = PIXFORMAT_RGB565, // YUV422,GRAYSCALE,RGB565,JPEG
+    .frame_size = FRAMESIZE_QVGA,     // QQVGA-UXGA, For ESP32, do not use sizes above QVGA when not JPEG. The performance of the ESP32-S series has improved a lot, but JPEG mode always gives better frame rates.
 
-    .jpeg_quality = 10, // 0-63, for OV series camera sensors, lower number means higher quality
+    .jpeg_quality = 20, // 0-63, for OV series camera sensors, lower number means higher quality
     .fb_count = 2,      // When jpeg mode is used, if fb_count more than one, the driver will work in continuous mode.
-    .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
+    .fb_location = CAMERA_FB_IN_PSRAM,
 };
 
 #endif
